@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 import cv2
 import numpy as np
 from ultralytics import YOLO
@@ -14,7 +14,7 @@ app = FastAPI()
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace * with your frontend URL in production
+    allow_origins=["https://ai-human-detection.vercel.app"],  # Allow the full frontend domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,28 +47,32 @@ def preprocess_image(image: Image.Image):
 
 async def detect_people_in_image(image: UploadFile):
     """Detect people in a single image."""
-    contents = await image.read()
-    pil_image = Image.open(BytesIO(contents)).convert("RGB")
-    processed_image = preprocess_image(pil_image)
-    results = model(processed_image)
+    try:
+        contents = await image.read()
+        pil_image = Image.open(BytesIO(contents)).convert("RGB")
+        processed_image = preprocess_image(pil_image)
+        results = model(processed_image)
+        
+        img = np.array(pil_image)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        
+        num_people = 0
+        for result in results:
+            for box in result.boxes:
+                class_id = int(box.cls[0])
+                if class_id == 0:  # Person class in COCO dataset
+                    num_people += 1
+                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(img, "Person", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
+        _, encoded_img = cv2.imencode(".png", img)
+        img_base64 = base64.b64encode(encoded_img).decode('utf-8')
+        
+        return {"image": img_base64, "count": num_people}
     
-    img = np.array(pil_image)
-    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    
-    num_people = 0
-    for result in results:
-        for box in result.boxes:
-            class_id = int(box.cls[0])
-            if class_id == 0:  # Person class in COCO dataset
-                num_people += 1
-                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(img, "Person", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-    
-    _, encoded_img = cv2.imencode(".png", img)
-    img_base64 = base64.b64encode(encoded_img).decode('utf-8')
-    
-    return {"image": img_base64, "count": num_people}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error processing image: {str(e)}")
 
 @app.post("/detect/")
 async def detect_people(images: list[UploadFile] = File(...)):
